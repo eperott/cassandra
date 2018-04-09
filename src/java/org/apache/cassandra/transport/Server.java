@@ -25,6 +25,9 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import javax.net.ssl.SSLEngine;
+import javax.net.ssl.SSLParameters;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -32,13 +35,13 @@ import com.google.common.collect.ImmutableMap;
 
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.ByteBuf;
-import io.netty.buffer.ByteBufAllocator;
 import io.netty.channel.*;
 import io.netty.channel.epoll.EpollEventLoopGroup;
 import io.netty.channel.epoll.EpollServerSocketChannel;
 import io.netty.channel.group.ChannelGroup;
 import io.netty.channel.group.DefaultChannelGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.handler.codec.ByteToMessageDecoder;
 import io.netty.handler.ssl.SslContext;
@@ -336,7 +339,7 @@ public class Server implements CassandraDaemon.Server
         }
     }
 
-    private static class Initializer extends ChannelInitializer<Channel>
+    private static class Initializer extends ChannelInitializer<SocketChannel>
     {
         // Stateless handlers
         private static final Message.ProtocolDecoder messageDecoder = new Message.ProtocolDecoder();
@@ -355,7 +358,7 @@ public class Server implements CassandraDaemon.Server
             this.server = server;
         }
 
-        protected void initChannel(Channel channel) throws Exception
+        protected void initChannel(SocketChannel channel) throws Exception
         {
             ChannelPipeline pipeline = channel.pipeline();
 
@@ -403,11 +406,24 @@ public class Server implements CassandraDaemon.Server
             this.encryptionOptions = encryptionOptions;
         }
 
-        protected final SslHandler createSslHandler(ByteBufAllocator allocator) throws IOException
+        protected final SslHandler createSslHandler(SocketChannel channel) throws IOException
         {
             SslContext sslContext = SSLFactory.getSslContext(encryptionOptions, encryptionOptions.require_client_auth,
                                                              SSLFactory.ConnectionType.NATIVE_TRANSPORT, SSLFactory.SocketType.SERVER);
-            return sslContext.newHandler(allocator);
+            if (encryptionOptions.require_endpoint_verification)
+            {
+                InetSocketAddress peer = channel.remoteAddress();
+                SslHandler sslHandler = sslContext.newHandler(channel.alloc(), peer.getHostString(), peer.getPort());
+                SSLEngine engine = sslHandler.engine();
+                SSLParameters sslParameters = engine.getSSLParameters();
+                sslParameters.setEndpointIdentificationAlgorithm("HTTPS");
+                engine.setSSLParameters(sslParameters);
+                return sslHandler;
+            }
+            else
+            {
+                return sslContext.newHandler(channel.alloc());
+            }
         }
     }
 
@@ -418,7 +434,7 @@ public class Server implements CassandraDaemon.Server
             super(server, encryptionOptions);
         }
 
-        protected void initChannel(final Channel channel) throws Exception
+        protected void initChannel(final SocketChannel channel) throws Exception
         {
             super.initChannel(channel);
             channel.pipeline().addFirst("sslDetectionHandler", new ByteToMessageDecoder()
@@ -436,7 +452,7 @@ public class Server implements CassandraDaemon.Server
                     {
                         // Connection uses SSL/TLS, replace the detection handler with a SslHandler and so use
                         // encryption.
-                        SslHandler sslHandler = createSslHandler(channel.alloc());
+                        SslHandler sslHandler = createSslHandler(channel);
                         channelHandlerContext.pipeline().replace(this, "ssl", sslHandler);
                     }
                     else
@@ -457,9 +473,9 @@ public class Server implements CassandraDaemon.Server
             super(server, encryptionOptions);
         }
 
-        protected void initChannel(Channel channel) throws Exception
+        protected void initChannel(SocketChannel channel) throws Exception
         {
-            SslHandler sslHandler = createSslHandler(channel.alloc());
+            SslHandler sslHandler = createSslHandler(channel);
             super.initChannel(channel);
             channel.pipeline().addFirst("ssl", sslHandler);
         }
