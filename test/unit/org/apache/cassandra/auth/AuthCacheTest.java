@@ -31,6 +31,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 public class AuthCacheTest
 {
@@ -191,6 +192,31 @@ public class AuthCacheTest
         cache.get("expect-exception");
     }
 
+    // CASSANDRA-15153
+    @Test
+    public void testCassandraExceptionPassThroughWhenCacheRefreshed() throws InterruptedException
+    {
+        setValidity(50);
+        TestCache<String, Integer> cache = new TestCache<>(this::loadOnceThenThrow, this::setValidity, () -> validity, () -> isCacheEnabled);
+
+        cache.get("10");
+
+        // Let update interval and validity timeout
+        Thread.sleep(60);
+
+        for (int i = 1; i < 5; i++)
+        {
+            try
+            {
+                cache.get("10");
+                fail("Did not get expected Exception on attempt " + i);
+            }
+            catch (UnavailableException expected)
+            {
+            }
+        }
+    }
+
     @Test(expected = UnavailableException.class)
     public void testCassandraExceptionPassThroughWhenCacheDisable()
     {
@@ -208,6 +234,14 @@ public class AuthCacheTest
     private Integer countingLoader(String s)
     {
         loadCounter++;
+        return Integer.parseInt(s);
+    }
+
+    private Integer loadOnceThenThrow(String s)
+    {
+        if (++loadCounter > 1)
+            throw UnavailableException.create(ConsistencyLevel.QUORUM, 3, 1);
+
         return Integer.parseInt(s);
     }
 
